@@ -2,13 +2,15 @@ const ALLOWED_ORIGIN = 'https://sneakerdrop-shop.pages.dev';
 
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
-  const allowed = origin === ALLOWED_ORIGIN ||
+  const allowed =
+    origin === ALLOWED_ORIGIN ||
     /^https:\/\/[a-z0-9-]+\.sneakerdrop-shop\.pages\.dev$/.test(origin);
 
   return {
     'Access-Control-Allow-Origin': allowed ? origin : ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Telegram-Init-Data',
+    'Access-Control-Allow-Headers':
+      'Content-Type, Authorization, X-Telegram-Init-Data',
     'Vary': 'Origin'
   };
 }
@@ -125,14 +127,20 @@ function html(value) {
   })[ch]);
 }
 
-// Проверка подписи Telegram
+// Проверка авторизации Telegram
 async function telegramAuthResult(env, initData) {
   if (!initData) {
-    return { user: null, reason: 'INIT_DATA_MISSING' };
+    return {
+      user: null,
+      reason: 'INIT_DATA_MISSING'
+    };
   }
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-    return { user: null, reason: 'BOT_TOKEN_MISSING' };
+    return {
+      user: null,
+      reason: 'BOT_TOKEN_MISSING'
+    };
   }
 
   const params = new URLSearchParams(initData);
@@ -140,15 +148,24 @@ async function telegramAuthResult(env, initData) {
   const authDate = Number(params.get('auth_date'));
 
   if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
-    return { user: null, reason: 'HASH_MISSING_OR_INVALID' };
+    return {
+      user: null,
+      reason: 'HASH_MISSING_OR_INVALID'
+    };
   }
 
   if (!Number.isFinite(authDate) || authDate <= 0) {
-    return { user: null, reason: 'AUTH_DATE_INVALID' };
+    return {
+      user: null,
+      reason: 'AUTH_DATE_INVALID'
+    };
   }
 
   if (Math.abs(Date.now() / 1000 - authDate) > 86400) {
-    return { user: null, reason: 'INIT_DATA_EXPIRED' };
+    return {
+      user: null,
+      reason: 'INIT_DATA_EXPIRED'
+    };
   }
 
   params.delete('hash');
@@ -198,24 +215,112 @@ async function telegramAuthResult(env, initData) {
   let difference = 0;
 
   for (let i = 0; i < hash.length; i++) {
-    difference |= calculated.charCodeAt(i) ^
+    difference |=
+      calculated.charCodeAt(i) ^
       hash.toLowerCase().charCodeAt(i);
   }
 
   if (difference !== 0) {
-    return { user: null, reason: 'SIGNATURE_MISMATCH' };
+    // Дополнительная диагностика.
+    // Эти варианты не предоставляют доступ к заказам.
+    async function matchesVariant(check, reversedKey = false) {
+      const first = await crypto.subtle.importKey(
+        'raw',
+        reversedKey
+          ? encoder.encode(env.TELEGRAM_BOT_TOKEN)
+          : encoder.encode('WebAppData'),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+
+      const derived = await crypto.subtle.sign(
+        'HMAC',
+        first,
+        reversedKey
+          ? encoder.encode('WebAppData')
+          : encoder.encode(env.TELEGRAM_BOT_TOKEN)
+      );
+
+      const key = await crypto.subtle.importKey(
+        'raw',
+        derived,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+
+      const bytes = new Uint8Array(
+        await crypto.subtle.sign(
+          'HMAC',
+          key,
+          encoder.encode(check)
+        )
+      );
+
+      const candidate = [...bytes]
+        .map(x => x.toString(16).padStart(2, '0'))
+        .join('');
+
+      return candidate === hash.toLowerCase();
+    }
+
+    const withSignature = new URLSearchParams(initData);
+    withSignature.delete('hash');
+
+    const signatureIncluded = [...withSignature.entries()]
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    const variants = {
+      signature_included:
+        await matchesVariant(signatureIncluded),
+
+      reversed_hmac_key:
+        await matchesVariant(checkString, true),
+
+      carriage_return_lines:
+        await matchesVariant(
+          checkString.replace(/\n/g, '\r\n')
+        )
+    };
+
+    const matching = Object.entries(variants)
+      .filter(([, ok]) => ok)
+      .map(([name]) => name);
+
+    return {
+      user: null,
+      reason: 'SIGNATURE_MISMATCH',
+      diagnostic: matching.length
+        ? matching.join(',')
+        : 'NO_VARIANT_MATCH'
+    };
   }
 
   try {
-    const user = JSON.parse(params.get('user') || 'null');
+    const user = JSON.parse(
+      params.get('user') || 'null'
+    );
 
     if (!user || !Number.isSafeInteger(user.id)) {
-      return { user: null, reason: 'USER_ID_MISSING' };
+      return {
+        user: null,
+        reason: 'USER_ID_MISSING'
+      };
     }
 
-    return { user, reason: null };
+    return {
+      user,
+      reason: null
+    };
+
   } catch {
-    return { user: null, reason: 'USER_DATA_INVALID' };
+    return {
+      user: null,
+      reason: 'USER_DATA_INVALID'
+    };
   }
 }
 
@@ -223,7 +328,7 @@ async function telegramUser(env, initData) {
   return (await telegramAuthResult(env, initData)).user;
 }
 
-// Проверяем, какому боту принадлежит токен
+// Проверка Telegram-бота
 async function botCheck(env) {
   if (!env.TELEGRAM_BOT_TOKEN) {
     return json({
@@ -344,7 +449,11 @@ async function createOrder(request, env) {
     throw new ApiError('Неверный формат заказа');
   }
 
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    Array.isArray(input)
+  ) {
     throw new ApiError('Неверный заказ');
   }
 
@@ -393,7 +502,9 @@ async function createOrder(request, env) {
     !sourceItems.length ||
     sourceItems.length > 30
   ) {
-    throw new ApiError('Корзина пуста или слишком большая');
+    throw new ApiError(
+      'Корзина пуста или слишком большая'
+    );
   }
 
   const requested = sourceItems.map(item => ({
@@ -423,7 +534,9 @@ async function createOrder(request, env) {
     );
   }
 
-  const ids = [...new Set(requested.map(item => item.id))];
+  const ids = [...new Set(
+    requested.map(item => item.id)
+  )];
 
   const catalog = await supabase(
     env,
@@ -431,7 +544,10 @@ async function createOrder(request, env) {
   );
 
   const byId = new Map(
-    (catalog || []).map(item => [String(item.id), item])
+    (catalog || []).map(item => [
+      String(item.id),
+      item
+    ])
   );
 
   const items = [];
@@ -489,7 +605,8 @@ async function createOrder(request, env) {
   }
 
   const total = items.reduce(
-    (sum, item) => sum + item.price * item.quantity,
+    (sum, item) =>
+      sum + item.price * item.quantity,
     0
   );
 
@@ -559,7 +676,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// История заказов
+// Мои заказы
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -568,11 +685,18 @@ async function myOrders(request, env) {
     ? authorization.slice(4)
     : request.headers.get('X-Telegram-Init-Data');
 
-  const result = await telegramAuthResult(env, initData);
+  const result = await telegramAuthResult(
+    env,
+    initData
+  );
 
   if (!result.user) {
     throw new ApiError(
-      `Telegram auth: ${result.reason}`,
+      `Telegram auth: ${result.reason}${
+        result.diagnostic
+          ? ' (' + result.diagnostic + ')'
+          : ''
+      }`,
       401
     );
   }
@@ -582,10 +706,12 @@ async function myOrders(request, env) {
     `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${result.user.id}&order=created_at.desc&limit=50`
   );
 
-  return json(Array.isArray(rows) ? rows : []);
+  return json(
+    Array.isArray(rows) ? rows : []
+  );
 }
 
-// Главный обработчик запросов
+// Основной обработчик
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -601,7 +727,10 @@ export default {
       const path =
         new URL(request.url).pathname.replace(/\/$/, '') || '/';
 
-      if (request.method === 'GET' && path === '/') {
+      if (
+        request.method === 'GET' &&
+        path === '/'
+      ) {
         response = json({
           status: 'ok',
           service: 'sneakerdrop-api',
@@ -634,11 +763,16 @@ export default {
         response = await myOrders(request, env);
 
       } else {
-        response = json({ error: 'Not found' }, 404);
+        response = json({
+          error: 'Not found'
+        }, 404);
       }
 
     } catch (error) {
-      console.error('Worker error', String(error));
+      console.error(
+        'Worker error',
+        String(error)
+      );
 
       if (error instanceof ApiError) {
         response = json({
@@ -651,9 +785,14 @@ export default {
       }
     }
 
-    const headers = new Headers(response.headers);
+    const headers = new Headers(
+      response.headers
+    );
 
-    for (const [key, value] of Object.entries(corsHeaders(request))) {
+    for (
+      const [key, value] of
+      Object.entries(corsHeaders(request))
+    ) {
       headers.set(key, value);
     }
 
