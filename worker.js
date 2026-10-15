@@ -1,4 +1,3 @@
-
 const ALLOWED_ORIGIN = 'https://sneakerdrop-shop.pages.dev';
 
 function corsHeaders(request) {
