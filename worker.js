@@ -125,20 +125,14 @@ function html(value) {
   })[ch]);
 }
 
-// Диагностика авторизации Telegram
+// Проверка подписи Telegram
 async function telegramAuthResult(env, initData) {
   if (!initData) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_MISSING'
-    };
+    return { user: null, reason: 'INIT_DATA_MISSING' };
   }
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-    return {
-      user: null,
-      reason: 'BOT_TOKEN_MISSING'
-    };
+    return { user: null, reason: 'BOT_TOKEN_MISSING' };
   }
 
   const params = new URLSearchParams(initData);
@@ -146,33 +140,22 @@ async function telegramAuthResult(env, initData) {
   const authDate = Number(params.get('auth_date'));
 
   if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
-    return {
-      user: null,
-      reason: 'HASH_MISSING_OR_INVALID'
-    };
+    return { user: null, reason: 'HASH_MISSING_OR_INVALID' };
   }
 
   if (!Number.isFinite(authDate) || authDate <= 0) {
-    return {
-      user: null,
-      reason: 'AUTH_DATE_INVALID'
-    };
+    return { user: null, reason: 'AUTH_DATE_INVALID' };
   }
 
   if (Math.abs(Date.now() / 1000 - authDate) > 86400) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_EXPIRED'
-    };
+    return { user: null, reason: 'INIT_DATA_EXPIRED' };
   }
 
   params.delete('hash');
   params.delete('signature');
 
   const checkString = [...params.entries()]
-    .sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    )
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
 
@@ -181,10 +164,7 @@ async function telegramAuthResult(env, initData) {
   const baseKey = await crypto.subtle.importKey(
     'raw',
     encoder.encode('WebAppData'),
-    {
-      name: 'HMAC',
-      hash: 'SHA-256'
-    },
+    { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
@@ -198,10 +178,7 @@ async function telegramAuthResult(env, initData) {
   const signingKey = await crypto.subtle.importKey(
     'raw',
     secret,
-    {
-      name: 'HMAC',
-      hash: 'SHA-256'
-    },
+    { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
@@ -221,45 +198,78 @@ async function telegramAuthResult(env, initData) {
   let difference = 0;
 
   for (let i = 0; i < hash.length; i++) {
-    difference |=
-      calculated.charCodeAt(i) ^
+    difference |= calculated.charCodeAt(i) ^
       hash.toLowerCase().charCodeAt(i);
   }
 
   if (difference !== 0) {
-    return {
-      user: null,
-      reason: 'SIGNATURE_MISMATCH'
-    };
+    return { user: null, reason: 'SIGNATURE_MISMATCH' };
   }
 
   try {
-    const user = JSON.parse(
-      params.get('user') || 'null'
-    );
+    const user = JSON.parse(params.get('user') || 'null');
 
     if (!user || !Number.isSafeInteger(user.id)) {
-      return {
-        user: null,
-        reason: 'USER_ID_MISSING'
-      };
+      return { user: null, reason: 'USER_ID_MISSING' };
     }
 
-    return {
-      user,
-      reason: null
-    };
-
+    return { user, reason: null };
   } catch {
-    return {
-      user: null,
-      reason: 'USER_DATA_INVALID'
-    };
+    return { user: null, reason: 'USER_DATA_INVALID' };
   }
 }
 
 async function telegramUser(env, initData) {
   return (await telegramAuthResult(env, initData)).user;
+}
+
+// Проверяем, какому боту принадлежит токен
+async function botCheck(env) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    return json({
+      ok: false,
+      reason: 'BOT_TOKEN_MISSING'
+    }, 503);
+  }
+
+  let response;
+
+  try {
+    response = await fetch(
+      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`,
+      { method: 'GET' }
+    );
+  } catch {
+    return json({
+      ok: false,
+      reason: 'TELEGRAM_CONNECTION_FAILED'
+    }, 502);
+  }
+
+  if (!response.ok) {
+    return json({
+      ok: false,
+      reason: 'TELEGRAM_TOKEN_REJECTED'
+    }, 502);
+  }
+
+  const result = await response.json();
+
+  if (!result.ok || !result.result?.is_bot) {
+    return json({
+      ok: false,
+      reason: 'INVALID_BOT_RESPONSE'
+    }, 502);
+  }
+
+  return json({
+    ok: true,
+    bot_username: result.result.username,
+    expected_bot: 'Sneakerdrop22_bot',
+    matches_expected:
+      String(result.result.username).toLowerCase() ===
+      'sneakerdrop22_bot'
+  });
 }
 
 // Каталог товаров
@@ -306,7 +316,7 @@ async function notifySeller(
     {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json; charset=utf-8'
       },
       body: JSON.stringify({
         chat_id: env.TELEGRAM_CHAT_ID,
@@ -324,7 +334,7 @@ async function notifySeller(
   }
 }
 
-// Создание заказа
+// Оформление заказа
 async function createOrder(request, env) {
   let input;
 
@@ -334,11 +344,7 @@ async function createOrder(request, env) {
     throw new ApiError('Неверный формат заказа');
   }
 
-  if (
-    !input ||
-    typeof input !== 'object' ||
-    Array.isArray(input)
-  ) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ApiError('Неверный заказ');
   }
 
@@ -387,9 +393,7 @@ async function createOrder(request, env) {
     !sourceItems.length ||
     sourceItems.length > 30
   ) {
-    throw new ApiError(
-      'Корзина пуста или слишком большая'
-    );
+    throw new ApiError('Корзина пуста или слишком большая');
   }
 
   const requested = sourceItems.map(item => ({
@@ -419,9 +423,7 @@ async function createOrder(request, env) {
     );
   }
 
-  const ids = [...new Set(
-    requested.map(item => item.id)
-  )];
+  const ids = [...new Set(requested.map(item => item.id))];
 
   const catalog = await supabase(
     env,
@@ -429,10 +431,7 @@ async function createOrder(request, env) {
   );
 
   const byId = new Map(
-    (catalog || []).map(item => [
-      String(item.id),
-      item
-    ])
+    (catalog || []).map(item => [String(item.id), item])
   );
 
   const items = [];
@@ -490,8 +489,7 @@ async function createOrder(request, env) {
   }
 
   const total = items.reduce(
-    (sum, item) =>
-      sum + item.price * item.quantity,
+    (sum, item) => sum + item.price * item.quantity,
     0
   );
 
@@ -561,7 +559,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// Мои заказы с диагностикой
+// История заказов
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -570,10 +568,7 @@ async function myOrders(request, env) {
     ? authorization.slice(4)
     : request.headers.get('X-Telegram-Init-Data');
 
-  const result = await telegramAuthResult(
-    env,
-    initData
-  );
+  const result = await telegramAuthResult(env, initData);
 
   if (!result.user) {
     throw new ApiError(
@@ -587,12 +582,10 @@ async function myOrders(request, env) {
     `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${result.user.id}&order=created_at.desc&limit=50`
   );
 
-  return json(
-    Array.isArray(rows) ? rows : []
-  );
+  return json(Array.isArray(rows) ? rows : []);
 }
 
-// Основной обработчик
+// Главный обработчик запросов
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -605,19 +598,22 @@ export default {
     let response;
 
     try {
-      const path = new URL(request.url)
-        .pathname.replace(/\/$/, '') || '/';
+      const path =
+        new URL(request.url).pathname.replace(/\/$/, '') || '/';
 
-      if (
-        request.method === 'GET' &&
-        path === '/'
-      ) {
+      if (request.method === 'GET' && path === '/') {
         response = json({
           status: 'ok',
           service: 'sneakerdrop-api',
           catalog: '/products',
           orders: '/orders'
         });
+
+      } else if (
+        request.method === 'GET' &&
+        path === '/bot-check'
+      ) {
+        response = await botCheck(env);
 
       } else if (
         request.method === 'GET' &&
@@ -638,16 +634,11 @@ export default {
         response = await myOrders(request, env);
 
       } else {
-        response = json({
-          error: 'Not found'
-        }, 404);
+        response = json({ error: 'Not found' }, 404);
       }
 
     } catch (error) {
-      console.error(
-        'Worker error',
-        String(error)
-      );
+      console.error('Worker error', String(error));
 
       if (error instanceof ApiError) {
         response = json({
@@ -660,14 +651,9 @@ export default {
       }
     }
 
-    const headers = new Headers(
-      response.headers
-    );
+    const headers = new Headers(response.headers);
 
-    for (
-      const [key, value] of
-      Object.entries(corsHeaders(request))
-    ) {
+    for (const [key, value] of Object.entries(corsHeaders(request))) {
       headers.set(key, value);
     }
 
