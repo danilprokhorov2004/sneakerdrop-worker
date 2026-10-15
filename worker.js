@@ -21,14 +21,12 @@ const STATUS_BUTTONS = [
 
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
-
   const allowed =
     origin === ALLOWED_ORIGIN ||
     /^https:\/\/[a-z0-9-]+\.sneakerdrop-shop\.pages\.dev$/.test(origin);
 
   return {
-    'Access-Control-Allow-Origin':
-      allowed ? origin : ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': allowed ? origin : ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers':
       'Content-Type, Authorization, X-Telegram-Init-Data',
@@ -59,16 +57,12 @@ function clean(value, max = 200) {
 
 function required(value, max = 200) {
   const result = clean(value, max);
-
-  if (!result) {
-    throw new ApiError('Заполните обязательные поля');
-  }
-
+  if (!result) throw new ApiError('Заполните обязательные поля');
   return result;
 }
 
 function html(value) {
-  return String(value).replace(/[&<>"']/g, ch => ({
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
     '&': '&amp;',
     '<': '&lt;',
     '>': '&gt;',
@@ -90,12 +84,10 @@ function supabaseConfig(env) {
   ).trim();
 
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)) {
-    throw new Error('SUPABASE_URL is missing or invalid');
+    throw new Error('Invalid SUPABASE_URL');
   }
 
-  if (!key) {
-    throw new Error('Supabase secret key is missing');
-  }
+  if (!key) throw new Error('Missing Supabase key');
 
   return { url, key };
 }
@@ -103,22 +95,17 @@ function supabaseConfig(env) {
 async function supabase(env, path, options = {}) {
   const { url, key } = supabaseConfig(env);
 
-  const headers = {
-    apikey: key,
-    'Content-Type': 'application/json',
-    ...(key.startsWith('sb_secret_')
-      ? {}
-      : { Authorization: `Bearer ${key}` }),
-    ...(options.headers || {})
-  };
-
-  const response = await fetch(
-    `${url}/rest/v1/${path}`,
-    {
-      ...options,
-      headers
+  const response = await fetch(`${url}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: key,
+      'Content-Type': 'application/json',
+      ...(key.startsWith('sb_secret_')
+        ? {}
+        : { Authorization: `Bearer ${key}` }),
+      ...(options.headers || {})
     }
-  );
+  });
 
   const raw = await response.text();
   let body;
@@ -133,32 +120,21 @@ async function supabase(env, path, options = {}) {
     console.error(
       'Supabase error',
       response.status,
-      body && typeof body === 'object'
-        ? String(body.code || body.error || 'unknown')
-        : 'unknown'
+      body?.code || 'unknown'
     );
-
     throw new Error(`Supabase HTTP ${response.status}`);
   }
 
   return body;
 }
 
-// Telegram Mini App authorization.
-// Сохраняем signature при проверке hash.
 async function telegramAuthResult(env, initData) {
   if (!initData) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_MISSING'
-    };
+    return { user: null, reason: 'INIT_DATA_MISSING' };
   }
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-    return {
-      user: null,
-      reason: 'BOT_TOKEN_MISSING'
-    };
+    return { user: null, reason: 'BOT_TOKEN_MISSING' };
   }
 
   const params = new URLSearchParams(initData);
@@ -166,32 +142,23 @@ async function telegramAuthResult(env, initData) {
   const authDate = Number(params.get('auth_date'));
 
   if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
-    return {
-      user: null,
-      reason: 'HASH_MISSING_OR_INVALID'
-    };
+    return { user: null, reason: 'HASH_INVALID' };
   }
 
   if (!Number.isFinite(authDate) || authDate <= 0) {
-    return {
-      user: null,
-      reason: 'AUTH_DATE_INVALID'
-    };
+    return { user: null, reason: 'AUTH_DATE_INVALID' };
   }
 
   if (Math.abs(Date.now() / 1000 - authDate) > 86400) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_EXPIRED'
-    };
+    return { user: null, reason: 'INIT_DATA_EXPIRED' };
   }
 
+  // Не удаляем signature: это важно для
+  // текущей работающей авторизации Mini App.
   params.delete('hash');
 
   const checkString = [...params.entries()]
-    .sort(([a], [b]) =>
-      a < b ? -1 : a > b ? 1 : 0
-    )
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
 
@@ -219,7 +186,7 @@ async function telegramAuthResult(env, initData) {
     ['sign']
   );
 
-  const signed = new Uint8Array(
+  const calculatedBytes = new Uint8Array(
     await crypto.subtle.sign(
       'HMAC',
       signingKey,
@@ -227,52 +194,36 @@ async function telegramAuthResult(env, initData) {
     )
   );
 
-  const calculated = [...signed]
+  const calculated = [...calculatedBytes]
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
 
   let difference = 0;
-  const expectedHash = hash.toLowerCase();
+  const expected = hash.toLowerCase();
 
-  for (let i = 0; i < expectedHash.length; i++) {
+  for (let i = 0; i < expected.length; i++) {
     difference |=
       calculated.charCodeAt(i) ^
-      expectedHash.charCodeAt(i);
+      expected.charCodeAt(i);
   }
 
   if (difference !== 0) {
-    return {
-      user: null,
-      reason: 'SIGNATURE_MISMATCH'
-    };
+    return { user: null, reason: 'SIGNATURE_MISMATCH' };
   }
 
   try {
-    const user = JSON.parse(
-      params.get('user') || 'null'
-    );
+    const user = JSON.parse(params.get('user') || 'null');
 
     if (!user || !Number.isSafeInteger(user.id)) {
-      return {
-        user: null,
-        reason: 'USER_ID_MISSING'
-      };
+      return { user: null, reason: 'USER_ID_MISSING' };
     }
 
     return { user, reason: null };
   } catch {
-    return {
-      user: null,
-      reason: 'USER_DATA_INVALID'
-    };
+    return { user: null, reason: 'USER_INVALID' };
   }
 }
 
-async function telegramUser(env, initData) {
-  return (await telegramAuthResult(env, initData)).user;
-}
-
-// Получение товаров
 async function products(env) {
   const result = await supabase(
     env,
@@ -282,10 +233,9 @@ async function products(env) {
   return json(Array.isArray(result) ? result : []);
 }
 
-// Telegram Bot API
 async function telegramApi(env, method, payload) {
   if (!env.TELEGRAM_BOT_TOKEN) {
-    throw new Error('TELEGRAM_BOT_TOKEN missing');
+    throw new Error('Missing Telegram bot token');
   }
 
   const response = await fetch(
@@ -300,19 +250,14 @@ async function telegramApi(env, method, payload) {
   );
 
   if (!response.ok) {
-    console.error(
-      'Telegram API HTTP error',
-      method,
-      response.status
-    );
-
-    throw new Error('Telegram API request failed');
+    throw new Error(`Telegram HTTP ${response.status}`);
   }
 
   const data = await response.json();
 
   if (!data.ok) {
-    throw new Error('Telegram API returned error');
+    console.error('Telegram API error', method, data.error_code);
+    throw new Error('Telegram API failed');
   }
 
   return data.result;
@@ -356,7 +301,6 @@ function orderNotificationText(
   );
 }
 
-// Уведомление о новом заказе
 async function notifySeller(
   env,
   order,
@@ -369,23 +313,20 @@ async function notifySeller(
     return;
   }
 
-  const text = orderNotificationText(
-    order,
-    customer,
-    items,
-    delivery,
-    pickupPoint
-  );
-
   await telegramApi(env, 'sendMessage', {
     chat_id: env.TELEGRAM_CHAT_ID,
-    text,
+    text: orderNotificationText(
+      order,
+      customer,
+      items,
+      delivery,
+      pickupPoint
+    ),
     parse_mode: 'HTML',
     reply_markup: orderKeyboard(order.id)
   });
 }
 
-// Оформление заказа
 async function createOrder(request, env) {
   let input;
 
@@ -395,11 +336,7 @@ async function createOrder(request, env) {
     throw new ApiError('Неверный формат заказа');
   }
 
-  if (
-    !input ||
-    typeof input !== 'object' ||
-    Array.isArray(input)
-  ) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ApiError('Неверный заказ');
   }
 
@@ -459,9 +396,7 @@ async function createOrder(request, env) {
       80
     ),
     size: clean(item?.size, 20),
-    quantity: Number(
-      item?.quantity ?? item?.qty ?? 1
-    )
+    quantity: Number(item?.quantity ?? item?.qty ?? 1)
   }));
 
   if (requested.some(item =>
@@ -476,9 +411,7 @@ async function createOrder(request, env) {
     );
   }
 
-  const ids = [
-    ...new Set(requested.map(item => item.id))
-  ];
+  const ids = [...new Set(requested.map(item => item.id))];
 
   const catalog = await supabase(
     env,
@@ -486,10 +419,7 @@ async function createOrder(request, env) {
   );
 
   const byId = new Map(
-    (catalog || []).map(item => [
-      String(item.id),
-      item
-    ])
+    (catalog || []).map(item => [String(item.id), item])
   );
 
   const items = [];
@@ -504,8 +434,7 @@ async function createOrder(request, env) {
       );
     }
 
-    const availability =
-      product.sizes?.[item.size];
+    const availability = product.sizes?.[item.size];
 
     if (
       availability === undefined ||
@@ -532,10 +461,7 @@ async function createOrder(request, env) {
     const price = Number(product.price);
 
     if (!Number.isFinite(price) || price <= 0) {
-      throw new ApiError(
-        'Некорректная цена товара',
-        409
-      );
+      throw new ApiError('Некорректная цена товара', 409);
     }
 
     items.push({
@@ -548,8 +474,7 @@ async function createOrder(request, env) {
   }
 
   const total = items.reduce(
-    (sum, item) =>
-      sum + item.price * item.quantity,
+    (sum, item) => sum + item.price * item.quantity,
     0
   );
 
@@ -561,7 +486,7 @@ async function createOrder(request, env) {
     10000
   );
 
-  const user = await telegramUser(env, initData);
+  const auth = await telegramAuthResult(env, initData);
 
   const row = {
     total,
@@ -572,7 +497,7 @@ async function createOrder(request, env) {
     city: customer.city,
     delivery_service: delivery,
     pickup_point: pickupPoint,
-    telegram_user_id: user?.id ?? null
+    telegram_user_id: auth.user?.id ?? null
   };
 
   const inserted = await supabase(
@@ -603,10 +528,7 @@ async function createOrder(request, env) {
       pickupPoint
     );
   } catch (error) {
-    console.error(
-      'Telegram notification error',
-      String(error)
-    );
+    console.error('Telegram notification error', String(error));
   }
 
   return json({
@@ -619,7 +541,6 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// Мои заказы
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -628,67 +549,50 @@ async function myOrders(request, env) {
     ? authorization.slice(4)
     : request.headers.get('X-Telegram-Init-Data');
 
-  const result = await telegramAuthResult(
-    env,
-    initData
-  );
+  const auth = await telegramAuthResult(env, initData);
 
-  if (!result.user) {
+  if (!auth.user) {
     throw new ApiError(
-      `Telegram auth: ${result.reason}`,
+      `Telegram auth: ${auth.reason}`,
       401
     );
   }
 
   const rows = await supabase(
     env,
-    `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${result.user.id}&order=created_at.desc&limit=50`
+    `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${auth.user.id}&order=created_at.desc&limit=50`
   );
 
-  return json(
-    Array.isArray(rows) ? rows : []
-  );
+  return json(Array.isArray(rows) ? rows : []);
 }
 
-// Обработка нажатий кнопок
 async function handleTelegramWebhook(request, env) {
-  const configuredSecret = String(
-    env.TELEGRAM_WEBHOOK_SECRET || ''
-  ).trim();
-
-  if (!configuredSecret) {
-    throw new ApiError(
-      'Webhook secret not configured',
-      503
-    );
-  }
-
-  const providedSecret = request.headers.get(
+  const secret = String(env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  const provided = request.headers.get(
     'X-Telegram-Bot-Api-Secret-Token'
   ) || '';
 
-  if (providedSecret !== configuredSecret) {
+  // Во время смены секрета принимаем также старый,
+  // если он отдельно указан в Cloudflare.
+  const previous = String(
+    env.TELEGRAM_WEBHOOK_PREVIOUS_SECRET || ''
+  ).trim();
+
+  if (
+    !secret ||
+    (provided !== secret && (!previous || provided !== previous))
+  ) {
     throw new ApiError('Forbidden', 403);
   }
 
   const update = await request.json();
   const callback = update.callback_query;
 
-  if (!callback) {
-    return json({ ok: true });
-  }
+  if (!callback) return json({ ok: true });
 
-  const adminId = String(
-    env.TELEGRAM_CHAT_ID || ''
-  );
-
-  const senderId = String(
-    callback.from?.id || ''
-  );
-
-  const chatId = String(
-    callback.message?.chat?.id || ''
-  );
+  const adminId = String(env.TELEGRAM_CHAT_ID || '');
+  const senderId = String(callback.from?.id || '');
+  const chatId = String(callback.message?.chat?.id || '');
 
   if (
     !adminId ||
@@ -696,15 +600,11 @@ async function handleTelegramWebhook(request, env) {
     chatId !== adminId ||
     callback.message?.chat?.type !== 'private'
   ) {
-    await telegramApi(
-      env,
-      'answerCallbackQuery',
-      {
-        callback_query_id: callback.id,
-        text: 'Нет доступа',
-        show_alert: true
-      }
-    );
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Нет доступа',
+      show_alert: true
+    });
 
     return json({ ok: true });
   }
@@ -714,14 +614,10 @@ async function handleTelegramWebhook(request, env) {
       .exec(callback.data || '');
 
   if (!match) {
-    await telegramApi(
-      env,
-      'answerCallbackQuery',
-      {
-        callback_query_id: callback.id,
-        text: 'Неизвестная команда'
-      }
-    );
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Неизвестная команда'
+    });
 
     return json({ ok: true });
   }
@@ -737,28 +633,20 @@ async function handleTelegramWebhook(request, env) {
   const order = orders?.[0];
 
   if (!order) {
-    await telegramApi(
-      env,
-      'answerCallbackQuery',
-      {
-        callback_query_id: callback.id,
-        text: 'Заказ не найден',
-        show_alert: true
-      }
-    );
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Заказ не найден',
+      show_alert: true
+    });
 
     return json({ ok: true });
   }
 
   if (order.status === newStatus) {
-    await telegramApi(
-      env,
-      'answerCallbackQuery',
-      {
-        callback_query_id: callback.id,
-        text: 'Этот статус уже установлен'
-      }
-    );
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Этот статус уже установлен'
+    });
 
     return json({ ok: true });
   }
@@ -771,9 +659,7 @@ async function handleTelegramWebhook(request, env) {
       headers: {
         Prefer: 'return=minimal'
       },
-      body: JSON.stringify({
-        status: newStatus
-      })
+      body: JSON.stringify({ status: newStatus })
     }
   );
 
@@ -783,47 +669,65 @@ async function handleTelegramWebhook(request, env) {
     city: order.city
   };
 
-  const text = orderNotificationText(
-    order,
-    customer,
-    order.items || [],
-    order.delivery_service,
-    order.pickup_point,
-    newStatus
-  );
-
   try {
-    await telegramApi(
-      env,
-      'editMessageText',
-      {
-        chat_id: callback.message.chat.id,
-        message_id: callback.message.message_id,
-        text,
-        parse_mode: 'HTML',
-        reply_markup: orderKeyboard(orderId)
-      }
-    );
+    await telegramApi(env, 'editMessageText', {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      text: orderNotificationText(
+        order,
+        customer,
+        order.items || [],
+        order.delivery_service,
+        order.pickup_point,
+        newStatus
+      ),
+      parse_mode: 'HTML',
+      reply_markup: orderKeyboard(orderId)
+    });
   } catch (error) {
-    console.error(
-      'Telegram message update failed',
-      String(error)
-    );
+    console.error('Message update failed', String(error));
   }
 
-  await telegramApi(
-    env,
-    'answerCallbackQuery',
-    {
-      callback_query_id: callback.id,
-      text: `Статус: ${STATUSES[newStatus]}`
-    }
-  );
+  await telegramApi(env, 'answerCallbackQuery', {
+    callback_query_id: callback.id,
+    text: `Статус: ${STATUSES[newStatus]}`
+  });
 
   return json({ ok: true });
 }
 
-// Главный обработчик запросов
+// Безопасная регистрация нового webhook.
+// Маршрут доступен только с отдельным ключом настройки.
+async function setupWebhook(request, env) {
+  const setupKey = String(env.TELEGRAM_SETUP_KEY || '').trim();
+
+  if (!setupKey) {
+    throw new ApiError('Setup disabled', 404);
+  }
+
+  const authorization =
+    request.headers.get('Authorization') || '';
+
+  if (authorization !== `Bearer ${setupKey}`) {
+    throw new ApiError('Forbidden', 403);
+  }
+
+  const webhookUrl =
+    'https://sneakerdrop-api.danil-prokhorov-2004.workers.dev/telegram-webhook';
+
+  const result = await telegramApi(env, 'setWebhook', {
+    url: webhookUrl,
+    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ['callback_query'],
+    drop_pending_updates: false
+  });
+
+  return json({
+    ok: result,
+    webhook: webhookUrl
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -839,15 +743,10 @@ export default {
       const path =
         new URL(request.url).pathname.replace(/\/$/, '') || '/';
 
-      if (
-        request.method === 'GET' &&
-        path === '/'
-      ) {
+      if (request.method === 'GET' && path === '/') {
         response = json({
           status: 'ok',
-          service: 'sneakerdrop-api',
-          catalog: '/products',
-          orders: '/orders'
+          service: 'sneakerdrop-api'
         });
 
       } else if (
@@ -860,109 +759,47 @@ export default {
         request.method === 'POST' &&
         path === '/orders'
       ) {
-        response = await createOrder(
-          request,
-          env
-        );
+        response = await createOrder(request, env);
 
       } else if (
         request.method === 'GET' &&
         path === '/my-orders'
       ) {
-        response = await myOrders(
-          request,
-          env
-        );
+        response = await myOrders(request, env);
 
       } else if (
         request.method === 'POST' &&
         path === '/telegram-webhook'
       ) {
-        response = await handleTelegramWebhook(
-          request,
-          env
-        );
+        response = await handleTelegramWebhook(request, env);
 
-      // ВРЕМЕННЫЙ МАРШРУТ ДЛЯ ПОДКЛЮЧЕНИЯ WEBHOOK
       } else if (
         request.method === 'POST' &&
         path === '/setup-webhook'
       ) {
-        const auth = request.headers.get(
-          'Authorization'
-        );
-
-        if (
-          !env.TELEGRAM_WEBHOOK_SECRET ||
-          auth !== `Bearer ${env.TELEGRAM_WEBHOOK_SECRET}`
-        ) {
-          throw new ApiError(
-            'Forbidden',
-            403
-          );
-        }
-
-        const webhookUrl =
-          'https://sneakerdrop-api.danil-prokhorov-2004.workers.dev/telegram-webhook';
-
-        const result = await telegramApi(
-          env,
-          'setWebhook',
-          {
-            url: webhookUrl,
-            secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-            allowed_updates: [
-              'callback_query'
-            ],
-            drop_pending_updates: true
-          }
-        );
-
-        response = json({
-          ok: result,
-          webhook: webhookUrl
-        });
+        response = await setupWebhook(request, env);
 
       } else {
-        response = json({
-          error: 'Not found'
-        }, 404);
+        response = json({ error: 'Not found' }, 404);
       }
 
     } catch (error) {
-      console.error(
-        'Worker error',
-        String(error)
-      );
+      console.error('Worker error', String(error));
 
-      if (error instanceof ApiError) {
-        response = json({
-          error: error.message
-        }, error.status);
-      } else {
-        response = json({
-          error: 'Не удалось обработать запрос'
-        }, 500);
-      }
+      response = error instanceof ApiError
+        ? json({ error: error.message }, error.status)
+        : json({ error: 'Не удалось обработать запрос' }, 500);
     }
 
-    const headers = new Headers(
-      response.headers
-    );
+    const headers = new Headers(response.headers);
 
-    for (
-      const [key, value]
-      of Object.entries(corsHeaders(request))
-    ) {
+    for (const [key, value] of Object.entries(corsHeaders(request))) {
       headers.set(key, value);
     }
 
-    return new Response(
-      response.body,
-      {
-        status: response.status,
-        headers
-      }
-    );
+    return new Response(response.body, {
+      status: response.status,
+      headers
+    });
   }
 };
