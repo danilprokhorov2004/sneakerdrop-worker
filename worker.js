@@ -127,7 +127,7 @@ function html(value) {
   })[ch]);
 }
 
-// Проверка авторизации Telegram
+// Авторизация Telegram Mini App
 async function telegramAuthResult(env, initData) {
   if (!initData) {
     return {
@@ -168,11 +168,14 @@ async function telegramAuthResult(env, initData) {
     };
   }
 
+  // ВАЖНО: удаляем только hash.
+  // Поле signature сохраняем в строке проверки.
   params.delete('hash');
-  params.delete('signature');
 
   const checkString = [...params.entries()]
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0
+    )
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
 
@@ -213,89 +216,18 @@ async function telegramAuthResult(env, initData) {
     .join('');
 
   let difference = 0;
+  const expectedHash = hash.toLowerCase();
 
-  for (let i = 0; i < hash.length; i++) {
+  for (let i = 0; i < expectedHash.length; i++) {
     difference |=
       calculated.charCodeAt(i) ^
-      hash.toLowerCase().charCodeAt(i);
+      expectedHash.charCodeAt(i);
   }
 
   if (difference !== 0) {
-    // Дополнительная диагностика.
-    // Эти варианты не предоставляют доступ к заказам.
-    async function matchesVariant(check, reversedKey = false) {
-      const first = await crypto.subtle.importKey(
-        'raw',
-        reversedKey
-          ? encoder.encode(env.TELEGRAM_BOT_TOKEN)
-          : encoder.encode('WebAppData'),
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign']
-      );
-
-      const derived = await crypto.subtle.sign(
-        'HMAC',
-        first,
-        reversedKey
-          ? encoder.encode('WebAppData')
-          : encoder.encode(env.TELEGRAM_BOT_TOKEN)
-      );
-
-      const key = await crypto.subtle.importKey(
-        'raw',
-        derived,
-        { name: 'HMAC', hash: 'SHA-256' },
-        false,
-        ['sign']
-      );
-
-      const bytes = new Uint8Array(
-        await crypto.subtle.sign(
-          'HMAC',
-          key,
-          encoder.encode(check)
-        )
-      );
-
-      const candidate = [...bytes]
-        .map(x => x.toString(16).padStart(2, '0'))
-        .join('');
-
-      return candidate === hash.toLowerCase();
-    }
-
-    const withSignature = new URLSearchParams(initData);
-    withSignature.delete('hash');
-
-    const signatureIncluded = [...withSignature.entries()]
-      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
-
-    const variants = {
-      signature_included:
-        await matchesVariant(signatureIncluded),
-
-      reversed_hmac_key:
-        await matchesVariant(checkString, true),
-
-      carriage_return_lines:
-        await matchesVariant(
-          checkString.replace(/\n/g, '\r\n')
-        )
-    };
-
-    const matching = Object.entries(variants)
-      .filter(([, ok]) => ok)
-      .map(([name]) => name);
-
     return {
       user: null,
-      reason: 'SIGNATURE_MISMATCH',
-      diagnostic: matching.length
-        ? matching.join(',')
-        : 'NO_VARIANT_MATCH'
+      reason: 'SIGNATURE_MISMATCH'
     };
   }
 
@@ -315,7 +247,6 @@ async function telegramAuthResult(env, initData) {
       user,
       reason: null
     };
-
   } catch {
     return {
       user: null,
@@ -325,10 +256,11 @@ async function telegramAuthResult(env, initData) {
 }
 
 async function telegramUser(env, initData) {
-  return (await telegramAuthResult(env, initData)).user;
+  const result = await telegramAuthResult(env, initData);
+  return result.user;
 }
 
-// Проверка Telegram-бота
+// Проверка подключения Telegram-бота
 async function botCheck(env) {
   if (!env.TELEGRAM_BOT_TOKEN) {
     return json({
@@ -341,8 +273,7 @@ async function botCheck(env) {
 
   try {
     response = await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`,
-      { method: 'GET' }
+      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`
     );
   } catch {
     return json({
@@ -387,7 +318,7 @@ async function products(env) {
   return json(Array.isArray(result) ? result : []);
 }
 
-// Уведомление продавцу
+// Уведомление продавцу о новом заказе
 async function notifySeller(
   env,
   order,
@@ -676,7 +607,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// Мои заказы
+// История заказов покупателя
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -692,11 +623,7 @@ async function myOrders(request, env) {
 
   if (!result.user) {
     throw new ApiError(
-      `Telegram auth: ${result.reason}${
-        result.diagnostic
-          ? ' (' + result.diagnostic + ')'
-          : ''
-      }`,
+      `Telegram auth: ${result.reason}`,
       401
     );
   }
@@ -711,7 +638,7 @@ async function myOrders(request, env) {
   );
 }
 
-// Основной обработчик
+// Обработка запросов
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -785,9 +712,7 @@ export default {
       }
     }
 
-    const headers = new Headers(
-      response.headers
-    );
+    const headers = new Headers(response.headers);
 
     for (
       const [key, value] of
