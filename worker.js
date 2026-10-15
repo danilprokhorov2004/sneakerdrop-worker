@@ -1,181 +1,252 @@
-// SNEAKERDROP API — Cloudflare Worker
-// Secrets: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY),
-// TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+const ALLOWED_ORIGIN = 'https://sneakerdrop-shop.pages.dev';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': 'https://sneakerdrop-shop.pages.dev',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Vary': 'Origin',
-};
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Telegram-Init-Data',
+    Vary: 'Origin'
+  };
+}
 
-function respond(data, status = 200) {
+function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+    headers: {
+      ...corsHeaders(),
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
+    }
   });
 }
 
-function sbConfig(env) {
+class ApiError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function supabaseConfig(env) {
   const url = String(env.SUPABASE_URL || '').replace(/\/$/, '');
   const key = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_KEY;
   if (!url || !key) throw new Error('Supabase variables are not configured');
   return { url, key };
 }
 
-async function sbRequest(env, path, options = {}) {
-  const { url, key } = sbConfig(env);
-  const res = await fetch(`${url}/rest/v1/${path}`, {
+async function supabase(env, path, options = {}) {
+  const { url, key } = supabaseConfig(env);
+  const response = await fetch(`${url}/rest/v1/${path}`, {
     ...options,
     headers: {
       apikey: key,
       Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
+      ...(options.headers || {})
+    }
   });
-  const raw = await res.text();
-  let data;
-  try { data = raw ? JSON.parse(raw) : null; } catch { data = raw; }
-  if (!res.ok) {
-    console.error('Supabase error', res.status, typeof data === 'object' ? data?.code : 'unknown');
-    throw new Error(`Database request failed (${res.status})`);
+  const raw = await response.text();
+  let body;
+  try { body = raw ? JSON.parse(raw) : null; } catch { body = raw; }
+  if (!response.ok) {
+    console.error('Supabase request failed', response.status, typeof body === 'object' ? body?.code : 'unknown');
+    throw new Error(`Database request failed (${response.status})`);
   }
-  return data;
+  return body;
 }
 
-function str(value, max = 200) { return String(value ?? '').trim().slice(0, max); }
-function required(value, max = 200) { const s = str(value, max); if (!s) throw new Error('Заполните обязательные поля'); return s; }
-function money(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
-function escapeHtml(value) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function clean(value, max = 200) {
+  return String(value ?? '').trim().slice(0, max);
+}
+
+function required(value, max = 200) {
+  const result = clean(value, max);
+  if (!result) throw new ApiError('Заполните обязательные поля');
+  return result;
+}
+
+function html(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+}
 
 async function telegramUser(env, initData) {
   if (!initData || !env.TELEGRAM_BOT_TOKEN) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   const authDate = Number(params.get('auth_date'));
-  if (!hash || !Number.isFinite(authDate) || Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
+  if (!hash || !Number.isFinite(authDate) || authDate <= 0 ||
+      Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
   params.delete('hash');
-  const checkString = [...params.entries()].sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${k}=${v}`).join('\n');
-  const enc = new TextEncoder();
-  const base = await crypto.subtle.importKey('raw', enc.encode('WebAppData'), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
-  const secret = await crypto.subtle.sign('HMAC', base, enc.encode(env.TELEGRAM_BOT_TOKEN));
-  const signing = await crypto.subtle.importKey('raw', secret, {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
-  const signed = new Uint8Array(await crypto.subtle.sign('HMAC', signing, enc.encode(checkString)));
-  const actual = [...signed].map(x => x.toString(16).padStart(2,'0')).join('');
-  if (actual.length !== hash.length) return null;
-  let diff = 0;
-  for (let i = 0; i < hash.length; i++) diff |= actual.charCodeAt(i) ^ hash.toLowerCase().charCodeAt(i);
-  if (diff !== 0) return null;
-  try { const user = JSON.parse(params.get('user') || 'null'); return user && Number.isSafeInteger(user.id) ? user : null; }
-  catch { return null; }
+  params.delete('signature');
+  const checkString = [...params.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`).join('\n');
+  const encoder = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey('raw', encoder.encode('WebAppData'),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const secret = await crypto.subtle.sign('HMAC', baseKey, encoder.encode(env.TELEGRAM_BOT_TOKEN));
+  const signingKey = await crypto.subtle.importKey('raw', secret,
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signed = new Uint8Array(await crypto.subtle.sign('HMAC', signingKey, encoder.encode(checkString)));
+  const calculated = [...signed].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  if (calculated.length !== hash.length) return null;
+  let difference = 0;
+  for (let i = 0; i < hash.length; i++) {
+    difference |= calculated.charCodeAt(i) ^ hash.toLowerCase().charCodeAt(i);
+  }
+  if (difference !== 0) return null;
+  try {
+    const user = JSON.parse(params.get('user') || 'null');
+    return user && Number.isSafeInteger(user.id) ? user : null;
+  } catch {
+    return null;
+  }
 }
 
-async function listProducts(env) {
-  const data = await sbRequest(env, 'products?select=id,name,price,description,image_url,category,sizes,active&active=eq.true&order=created_at.desc');
-  return respond(data || []);
+async function products(env) {
+  const result = await supabase(env,
+    'products?select=id,name,price,description,image_url,category,sizes,active&active=eq.true&order=created_at.desc');
+  return json(result || []);
 }
 
-async function sendNotification(env, order, customer, items, delivery, address) {
+async function notifySeller(env, order, customer, items, delivery, pickupPoint) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) {
     console.warn('Telegram notification variables not configured');
     return;
   }
-  const itemText = items.map(x => `• ${escapeHtml(x.name)} | ${escapeHtml(x.size)} | ${x.quantity} шт. × ${x.price} ₽`).join('\n');
-  const message = `<b>Новый заказ SNEAKERDROP</b>\nНомер: <code>${escapeHtml(order.id)}</code>\n\n` +
-    `Покупатель: ${escapeHtml(customer.name)}\nТелефон: ${escapeHtml(customer.phone)}\n` +
-    `Город: ${escapeHtml(customer.city)}\nДоставка: ${escapeHtml(delivery)}\n` +
-    `Адрес/ПВЗ: ${escapeHtml(address)}\n\n${itemText}\n\n<b>Итого: ${order.total} ₽</b>\nСтатус: Новый`;
-  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({chat_id:env.TELEGRAM_CHAT_ID, text:message, parse_mode:'HTML'}),
+  const details = items.map(item =>
+    `• ${html(item.name)} | ${html(item.size)} | ${item.quantity} шт. × ${item.price} ₽`).join('\n');
+  const text = `<b>Новый заказ SNEAKERDROP</b>\nНомер: <code>${html(order.id)}</code>\n\n` +
+    `Покупатель: ${html(customer.name)}\nТелефон: ${html(customer.phone)}\n` +
+    `Город: ${html(customer.city)}\nДоставка: ${html(delivery)}\n` +
+    `Адрес/ПВЗ: ${html(pickupPoint)}\n\n${details}\n\n` +
+    `<b>Итого: ${order.total} ₽</b>\nСтатус: Новый`;
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' })
   });
-  if (!res.ok) console.error('Telegram sendMessage failed', res.status);
+  if (!response.ok) console.error('Telegram notification failed', response.status);
 }
 
 async function createOrder(request, env) {
   let input;
-  try { input = await request.json(); } catch { return respond({error:'Неверный формат заказа'},400); }
-  if (!input || typeof input !== 'object') return respond({error:'Неверный заказ'},400);
+  try { input = await request.json(); }
+  catch { throw new ApiError('Неверный формат заказа'); }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ApiError('Неверный заказ');
+  }
+
   const customer = {
     name: required(input.customer_name ?? input.customerName ?? input.name),
     phone: required(input.phone ?? input.customer_phone ?? input.customerPhone, 50),
-    city: required(input.city ?? input.customer_city, 120),
+    city: required(input.city ?? input.customer_city, 120)
   };
-  const delivery = required(input.delivery ?? input.delivery_method ?? input.deliveryMethod, 120);
-  const address = str(input.address ?? input.pickup_point ?? input.pickupPoint ?? input.delivery_address ?? input.pvz, 500);
-  const sourceItems = input.items ?? input.cart;
-  if (!Array.isArray(sourceItems) || sourceItems.length < 1 || sourceItems.length > 30) return respond({error:'Корзина пуста или слишком большая'},400);
+  const delivery = required(input.delivery ?? input.delivery_service ?? input.delivery_method ?? input.deliveryMethod, 120);
+  const pickupPoint = required(
+    input.address ?? input.pickup_point ?? input.pickupPoint ?? input.delivery_address ?? input.pvz,
+    500
+  );
 
-  const requested = sourceItems.map(x => ({
-    id: str(x.product_id ?? x.productId ?? x.id, 80),
-    size: str(x.size, 20),
-    quantity: Number(x.quantity ?? x.qty ?? 1),
-  }));
-  if (requested.some(x => !x.id || !x.size || !Number.isInteger(x.quantity) || x.quantity < 1 || x.quantity > 20))
-    return respond({error:'Проверьте товары, размеры и количество'},400);
-  const ids = [...new Set(requested.map(x => x.id))];
-  const filters = ids.map(x => `"${x.replace(/["\\]/g,'')}\"`).join(',');
-  const products = await sbRequest(env, `products?select=id,name,price,sizes,active&id=in.(${encodeURIComponent(filters)})`);
-  const byId = new Map(products.map(x => [String(x.id), x]));
-  const items = [];
-  for (const x of requested) {
-    const product = byId.get(x.id);
-    if (!product || !product.active) return respond({error:'Один из товаров больше не продаётся'},409);
-    const availability = product.sizes?.[x.size];
-    if (availability === undefined || availability === false || availability === 0 || availability === '0')
-      return respond({error:`Размер ${x.size} недоступен для ${product.name}`},409);
-    if (typeof availability === 'number' && x.quantity > availability)
-      return respond({error:`Недостаточно товара ${product.name}, размер ${x.size}`},409);
-    const price = money(product.price);
-    if (price <= 0) return respond({error:'Некорректная цена товара'},409);
-    items.push({product_id:x.id, name:product.name, size:x.size, quantity:x.quantity, price});
+  const sourceItems = input.items ?? input.cart;
+  if (!Array.isArray(sourceItems) || sourceItems.length === 0 || sourceItems.length > 30) {
+    throw new ApiError('Корзина пуста или слишком большая');
   }
-  const total = items.reduce((sum, x) => sum + x.price * x.quantity, 0);
-  const initData = str(input.initData ?? input.init_data ?? request.headers.get('X-Telegram-Init-Data'), 10000);
+  const requested = sourceItems.map(item => ({
+    id: clean(item?.product_id ?? item?.productId ?? item?.id, 80),
+    size: clean(item?.size, 20),
+    quantity: Number(item?.quantity ?? item?.qty ?? 1)
+  }));
+  if (requested.some(item => !/^[0-9a-fA-F-]{36}$/.test(item.id) || !item.size ||
+      !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20)) {
+    throw new ApiError('Проверьте товары, размеры и количество');
+  }
+
+  const ids = [...new Set(requested.map(item => item.id))];
+  const filter = ids.join(',');
+  const catalog = await supabase(env,
+    `products?select=id,name,price,sizes,active&id=in.(${encodeURIComponent(filter)})`);
+  const byId = new Map((catalog || []).map(item => [String(item.id), item]));
+  const items = [];
+  for (const item of requested) {
+    const product = byId.get(item.id);
+    if (!product || !product.active) throw new ApiError('Один из товаров больше не продаётся', 409);
+    const availability = product.sizes?.[item.size];
+    if (availability === undefined || availability === false || availability === 0 || availability === '0') {
+      throw new ApiError(`Размер ${item.size} недоступен для ${product.name}`, 409);
+    }
+    if (typeof availability === 'number' && item.quantity > availability) {
+      throw new ApiError(`Недостаточно товара ${product.name}, размер ${item.size}`, 409);
+    }
+    const price = Number(product.price);
+    if (!Number.isFinite(price) || price <= 0) throw new ApiError('Некорректная цена товара', 409);
+    items.push({ product_id: item.id, name: product.name, size: item.size,
+      quantity: item.quantity, price });
+  }
+
+  const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const initData = clean(input.initData ?? input.init_data ?? request.headers.get('X-Telegram-Init-Data'), 10000);
   const user = await telegramUser(env, initData);
 
-  // Only use columns known to be present in the SNEAKERDROP orders table.
+  // These names match the existing Supabase public.orders table.
   const row = {
-    total, items, status:'new',
-    customer_name:customer.name, phone:customer.phone, city:customer.city,
-    delivery, telegram_user_id:user?.id ?? null,
+    total,
+    items,
+    status: 'new',
+    customer_name: customer.name,
+    phone: customer.phone,
+    city: customer.city,
+    delivery_service: delivery,
+    pickup_point: pickupPoint,
+    telegram_user_id: user?.id ?? null
   };
-  // The pickup point is included in the notification; save it when the existing schema supports it.
-  // Avoid inserting unknown optional column names that would reject the entire order.
-  const inserted = await sbRequest(env, 'orders?select=id,total,status', {
-    method:'POST', headers:{Prefer:'return=representation'}, body:JSON.stringify(row),
+  const inserted = await supabase(env, 'orders?select=id,total,status', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify(row)
   });
   const order = inserted?.[0];
   if (!order?.id) throw new Error('Order was not saved');
-  try { await sendNotification(env, order, customer, items, delivery, address); }
+
+  try { await notifySeller(env, order, customer, items, delivery, pickupPoint); }
   catch (error) { console.error('Telegram notification error', String(error)); }
-  return respond({success:true, id:order.id, order_id:order.id, orderId:order.id, total:order.total, status:order.status},201);
+
+  return json({ success: true, id: order.id, order_id: order.id,
+    orderId: order.id, total: order.total, status: order.status }, 201);
 }
 
 async function myOrders(request, env) {
-  const auth = request.headers.get('Authorization') || '';
-  const initData = auth.startsWith('tma ') ? auth.slice(4) : request.headers.get('X-Telegram-Init-Data');
+  const authorization = request.headers.get('Authorization') || '';
+  const initData = authorization.startsWith('tma ')
+    ? authorization.slice(4) : request.headers.get('X-Telegram-Init-Data');
   const user = await telegramUser(env, initData);
-  if (!user) return respond({error:'Откройте магазин через Telegram'},401);
-  const rows = await sbRequest(env, `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${user.id}&order=created_at.desc&limit=50`);
-  return respond(rows || []);
+  if (!user) throw new ApiError('Откройте магазин через Telegram', 401);
+  const rows = await supabase(env,
+    `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${user.id}&order=created_at.desc&limit=50`);
+  return json(rows || []);
 }
 
 export default {
   async fetch(request, env) {
-    if (request.method === 'OPTIONS') return new Response(null, {status:204, headers:corsHeaders});
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders() });
+    }
     try {
-      const path = new URL(request.url).pathname.replace(/\/$/,'') || '/';
-      if (request.method === 'GET' && path === '/') return respond({status:'ok',service:'sneakerdrop-api',catalog:'/products',orders:'/orders'});
-      if (request.method === 'GET' && path === '/products') return await listProducts(env);
+      const path = new URL(request.url).pathname.replace(/\/$/, '') || '/';
+      if (request.method === 'GET' && path === '/') {
+        return json({ status: 'ok', service: 'sneakerdrop-api',
+          catalog: '/products', orders: '/orders' });
+      }
+      if (request.method === 'GET' && path === '/products') return await products(env);
       if (request.method === 'POST' && path === '/orders') return await createOrder(request, env);
       if (request.method === 'GET' && path === '/my-orders') return await myOrders(request, env);
-      return respond({error:'Not found'},404);
+      return json({ error: 'Not found' }, 404);
     } catch (error) {
       console.error('Worker error', String(error));
-      return respond({error:error.message === 'Заполните обязательные поля' ? error.message : 'Не удалось обработать запрос'},
-        error.message === 'Заполните обязательные поля' ? 400 : 500);
+      if (error instanceof ApiError) return json({ error: error.message }, error.status);
+      return json({ error: 'Не удалось обработать запрос' }, 500);
     }
-  },
+  }
 };
