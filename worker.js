@@ -21,6 +21,7 @@ const STATUS_BUTTONS = [
 
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
+
   const allowed =
     origin === ALLOWED_ORIGIN ||
     /^https:\/\/[a-z0-9-]+\.sneakerdrop-shop\.pages\.dev$/.test(origin);
@@ -31,7 +32,7 @@ function corsHeaders(request) {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers':
       'Content-Type, Authorization, X-Telegram-Init-Data',
-    'Vary': 'Origin'
+    Vary: 'Origin'
   };
 }
 
@@ -111,17 +112,13 @@ async function supabase(env, path, options = {}) {
     ...(options.headers || {})
   };
 
-  let response;
-
-  try {
-    response = await fetch(`${url}/rest/v1/${path}`, {
+  const response = await fetch(
+    `${url}/rest/v1/${path}`,
+    {
       ...options,
       headers
-    });
-  } catch (error) {
-    console.error('Supabase network error', String(error));
-    throw new Error('Supabase connection failed');
-  }
+    }
+  );
 
   const raw = await response.text();
   let body;
@@ -134,10 +131,10 @@ async function supabase(env, path, options = {}) {
 
   if (!response.ok) {
     console.error(
-      'Supabase request failed',
+      'Supabase error',
       response.status,
       body && typeof body === 'object'
-        ? String(body.code || body.error || 'unknown').slice(0, 100)
+        ? String(body.code || body.error || 'unknown')
         : 'unknown'
     );
 
@@ -147,16 +144,21 @@ async function supabase(env, path, options = {}) {
   return body;
 }
 
-// Авторизация Telegram Mini App.
-// В этой рабочей конфигурации поле signature
-// сохраняется в строке проверки hash.
+// Telegram Mini App authorization.
+// Сохраняем signature при проверке hash.
 async function telegramAuthResult(env, initData) {
   if (!initData) {
-    return { user: null, reason: 'INIT_DATA_MISSING' };
+    return {
+      user: null,
+      reason: 'INIT_DATA_MISSING'
+    };
   }
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-    return { user: null, reason: 'BOT_TOKEN_MISSING' };
+    return {
+      user: null,
+      reason: 'BOT_TOKEN_MISSING'
+    };
   }
 
   const params = new URLSearchParams(initData);
@@ -171,11 +173,17 @@ async function telegramAuthResult(env, initData) {
   }
 
   if (!Number.isFinite(authDate) || authDate <= 0) {
-    return { user: null, reason: 'AUTH_DATE_INVALID' };
+    return {
+      user: null,
+      reason: 'AUTH_DATE_INVALID'
+    };
   }
 
   if (Math.abs(Date.now() / 1000 - authDate) > 86400) {
-    return { user: null, reason: 'INIT_DATA_EXPIRED' };
+    return {
+      user: null,
+      reason: 'INIT_DATA_EXPIRED'
+    };
   }
 
   params.delete('hash');
@@ -264,7 +272,7 @@ async function telegramUser(env, initData) {
   return (await telegramAuthResult(env, initData)).user;
 }
 
-// Каталог
+// Получение товаров
 async function products(env) {
   const result = await supabase(
     env,
@@ -274,7 +282,7 @@ async function products(env) {
   return json(Array.isArray(result) ? result : []);
 }
 
-// Запрос к Telegram Bot API
+// Telegram Bot API
 async function telegramApi(env, method, payload) {
   if (!env.TELEGRAM_BOT_TOKEN) {
     throw new Error('TELEGRAM_BOT_TOKEN missing');
@@ -292,7 +300,12 @@ async function telegramApi(env, method, payload) {
   );
 
   if (!response.ok) {
-    console.error('Telegram API error', method, response.status);
+    console.error(
+      'Telegram API HTTP error',
+      method,
+      response.status
+    );
+
     throw new Error('Telegram API request failed');
   }
 
@@ -330,7 +343,7 @@ function orderNotificationText(
   ).join('\n');
 
   return (
-    `<b>Новый заказ SNEAKERDROP</b>\n` +
+    `<b>Заказ SNEAKERDROP</b>\n` +
     `Номер: <code>${html(order.id)}</code>\n\n` +
     `Покупатель: ${html(customer.name)}\n` +
     `Телефон: ${html(customer.phone)}\n` +
@@ -343,7 +356,7 @@ function orderNotificationText(
   );
 }
 
-// Уведомление с кнопками
+// Уведомление о новом заказе
 async function notifySeller(
   env,
   order,
@@ -382,7 +395,11 @@ async function createOrder(request, env) {
     throw new ApiError('Неверный формат заказа');
   }
 
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    Array.isArray(input)
+  ) {
     throw new ApiError('Неверный заказ');
   }
 
@@ -442,7 +459,9 @@ async function createOrder(request, env) {
       80
     ),
     size: clean(item?.size, 20),
-    quantity: Number(item?.quantity ?? item?.qty ?? 1)
+    quantity: Number(
+      item?.quantity ?? item?.qty ?? 1
+    )
   }));
 
   if (requested.some(item =>
@@ -457,7 +476,9 @@ async function createOrder(request, env) {
     );
   }
 
-  const ids = [...new Set(requested.map(item => item.id))];
+  const ids = [
+    ...new Set(requested.map(item => item.id))
+  ];
 
   const catalog = await supabase(
     env,
@@ -465,7 +486,10 @@ async function createOrder(request, env) {
   );
 
   const byId = new Map(
-    (catalog || []).map(item => [String(item.id), item])
+    (catalog || []).map(item => [
+      String(item.id),
+      item
+    ])
   );
 
   const items = [];
@@ -480,7 +504,8 @@ async function createOrder(request, env) {
       );
     }
 
-    const availability = product.sizes?.[item.size];
+    const availability =
+      product.sizes?.[item.size];
 
     if (
       availability === undefined ||
@@ -578,7 +603,10 @@ async function createOrder(request, env) {
       pickupPoint
     );
   } catch (error) {
-    console.error('Telegram notification error', String(error));
+    console.error(
+      'Telegram notification error',
+      String(error)
+    );
   }
 
   return json({
@@ -591,7 +619,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// История заказов
+// Мои заказы
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -600,7 +628,10 @@ async function myOrders(request, env) {
     ? authorization.slice(4)
     : request.headers.get('X-Telegram-Init-Data');
 
-  const result = await telegramAuthResult(env, initData);
+  const result = await telegramAuthResult(
+    env,
+    initData
+  );
 
   if (!result.user) {
     throw new ApiError(
@@ -614,10 +645,12 @@ async function myOrders(request, env) {
     `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${result.user.id}&order=created_at.desc&limit=50`
   );
 
-  return json(Array.isArray(rows) ? rows : []);
+  return json(
+    Array.isArray(rows) ? rows : []
+  );
 }
 
-// Обработка нажатий кнопок Telegram
+// Обработка нажатий кнопок
 async function handleTelegramWebhook(request, env) {
   const configuredSecret = String(
     env.TELEGRAM_WEBHOOK_SECRET || ''
@@ -645,9 +678,17 @@ async function handleTelegramWebhook(request, env) {
     return json({ ok: true });
   }
 
-  const adminId = String(env.TELEGRAM_CHAT_ID || '');
-  const senderId = String(callback.from?.id || '');
-  const chatId = String(callback.message?.chat?.id || '');
+  const adminId = String(
+    env.TELEGRAM_CHAT_ID || ''
+  );
+
+  const senderId = String(
+    callback.from?.id || ''
+  );
+
+  const chatId = String(
+    callback.message?.chat?.id || ''
+  );
 
   if (
     !adminId ||
@@ -655,23 +696,32 @@ async function handleTelegramWebhook(request, env) {
     chatId !== adminId ||
     callback.message?.chat?.type !== 'private'
   ) {
-    await telegramApi(env, 'answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Нет доступа',
-      show_alert: true
-    });
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id,
+        text: 'Нет доступа',
+        show_alert: true
+      }
+    );
 
     return json({ ok: true });
   }
 
-  const match = /^order:([0-9a-fA-F-]{36}):(confirmed|shipped|delivered|cancelled)$/
-    .exec(callback.data || '');
+  const match =
+    /^order:([0-9a-fA-F-]{36}):(confirmed|shipped|delivered|cancelled)$/
+      .exec(callback.data || '');
 
   if (!match) {
-    await telegramApi(env, 'answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Неизвестная команда'
-    });
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id,
+        text: 'Неизвестная команда'
+      }
+    );
 
     return json({ ok: true });
   }
@@ -687,20 +737,28 @@ async function handleTelegramWebhook(request, env) {
   const order = orders?.[0];
 
   if (!order) {
-    await telegramApi(env, 'answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Заказ не найден',
-      show_alert: true
-    });
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id,
+        text: 'Заказ не найден',
+        show_alert: true
+      }
+    );
 
     return json({ ok: true });
   }
 
   if (order.status === newStatus) {
-    await telegramApi(env, 'answerCallbackQuery', {
-      callback_query_id: callback.id,
-      text: 'Этот статус уже установлен'
-    });
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id,
+        text: 'Этот статус уже установлен'
+      }
+    );
 
     return json({ ok: true });
   }
@@ -735,13 +793,17 @@ async function handleTelegramWebhook(request, env) {
   );
 
   try {
-    await telegramApi(env, 'editMessageText', {
-      chat_id: callback.message.chat.id,
-      message_id: callback.message.message_id,
-      text,
-      parse_mode: 'HTML',
-      reply_markup: orderKeyboard(orderId)
-    });
+    await telegramApi(
+      env,
+      'editMessageText',
+      {
+        chat_id: callback.message.chat.id,
+        message_id: callback.message.message_id,
+        text,
+        parse_mode: 'HTML',
+        reply_markup: orderKeyboard(orderId)
+      }
+    );
   } catch (error) {
     console.error(
       'Telegram message update failed',
@@ -749,15 +811,19 @@ async function handleTelegramWebhook(request, env) {
     );
   }
 
-  await telegramApi(env, 'answerCallbackQuery', {
-    callback_query_id: callback.id,
-    text: `Статус: ${STATUSES[newStatus]}`
-  });
+  await telegramApi(
+    env,
+    'answerCallbackQuery',
+    {
+      callback_query_id: callback.id,
+      text: `Статус: ${STATUSES[newStatus]}`
+    }
+  );
 
   return json({ ok: true });
 }
 
-// Главный обработчик
+// Главный обработчик запросов
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -794,19 +860,68 @@ export default {
         request.method === 'POST' &&
         path === '/orders'
       ) {
-        response = await createOrder(request, env);
+        response = await createOrder(
+          request,
+          env
+        );
 
       } else if (
         request.method === 'GET' &&
         path === '/my-orders'
       ) {
-        response = await myOrders(request, env);
+        response = await myOrders(
+          request,
+          env
+        );
 
       } else if (
         request.method === 'POST' &&
         path === '/telegram-webhook'
       ) {
-        response = await handleTelegramWebhook(request, env);
+        response = await handleTelegramWebhook(
+          request,
+          env
+        );
+
+      // ВРЕМЕННЫЙ МАРШРУТ ДЛЯ ПОДКЛЮЧЕНИЯ WEBHOOK
+      } else if (
+        request.method === 'POST' &&
+        path === '/setup-webhook'
+      ) {
+        const auth = request.headers.get(
+          'Authorization'
+        );
+
+        if (
+          !env.TELEGRAM_WEBHOOK_SECRET ||
+          auth !== `Bearer ${env.TELEGRAM_WEBHOOK_SECRET}`
+        ) {
+          throw new ApiError(
+            'Forbidden',
+            403
+          );
+        }
+
+        const webhookUrl =
+          'https://sneakerdrop-api.danil-prokhorov-2004.workers.dev/telegram-webhook';
+
+        const result = await telegramApi(
+          env,
+          'setWebhook',
+          {
+            url: webhookUrl,
+            secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+            allowed_updates: [
+              'callback_query'
+            ],
+            drop_pending_updates: true
+          }
+        );
+
+        response = json({
+          ok: result,
+          webhook: webhookUrl
+        });
 
       } else {
         response = json({
@@ -815,7 +930,10 @@ export default {
       }
 
     } catch (error) {
-      console.error('Worker error', String(error));
+      console.error(
+        'Worker error',
+        String(error)
+      );
 
       if (error instanceof ApiError) {
         response = json({
@@ -828,15 +946,23 @@ export default {
       }
     }
 
-    const headers = new Headers(response.headers);
+    const headers = new Headers(
+      response.headers
+    );
 
-    for (const [key, value] of Object.entries(corsHeaders(request))) {
+    for (
+      const [key, value]
+      of Object.entries(corsHeaders(request))
+    ) {
       headers.set(key, value);
     }
 
-    return new Response(response.body, {
-      status: response.status,
-      headers
-    });
+    return new Response(
+      response.body,
+      {
+        status: response.status,
+        headers
+      }
+    );
   }
 };
