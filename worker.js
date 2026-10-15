@@ -1,5 +1,24 @@
 const ALLOWED_ORIGIN = 'https://sneakerdrop-shop.pages.dev';
 
+const STATUSES = {
+  new: 'Новый',
+  confirmed: 'Подтверждён',
+  shipped: 'Отправлен',
+  delivered: 'Доставлен',
+  cancelled: 'Отменён'
+};
+
+const STATUS_BUTTONS = [
+  [
+    { text: '✅ Подтвердить', status: 'confirmed' },
+    { text: '🚚 Отправлен', status: 'shipped' }
+  ],
+  [
+    { text: '📦 Доставлен', status: 'delivered' },
+    { text: '❌ Отменить', status: 'cancelled' }
+  ]
+];
+
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
   const allowed =
@@ -7,7 +26,8 @@ function corsHeaders(request) {
     /^https:\/\/[a-z0-9-]+\.sneakerdrop-shop\.pages\.dev$/.test(origin);
 
   return {
-    'Access-Control-Allow-Origin': allowed ? origin : ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin':
+      allowed ? origin : ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers':
       'Content-Type, Authorization, X-Telegram-Init-Data',
@@ -30,6 +50,30 @@ class ApiError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+function clean(value, max = 200) {
+  return String(value ?? '').trim().slice(0, max);
+}
+
+function required(value, max = 200) {
+  const result = clean(value, max);
+
+  if (!result) {
+    throw new ApiError('Заполните обязательные поля');
+  }
+
+  return result;
+}
+
+function html(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[ch]);
 }
 
 function supabaseConfig(env) {
@@ -103,44 +147,16 @@ async function supabase(env, path, options = {}) {
   return body;
 }
 
-function clean(value, max = 200) {
-  return String(value ?? '').trim().slice(0, max);
-}
-
-function required(value, max = 200) {
-  const result = clean(value, max);
-
-  if (!result) {
-    throw new ApiError('Заполните обязательные поля');
-  }
-
-  return result;
-}
-
-function html(value) {
-  return String(value).replace(/[&<>"']/g, ch => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  })[ch]);
-}
-
-// Авторизация Telegram Mini App
+// Авторизация Telegram Mini App.
+// В этой рабочей конфигурации поле signature
+// сохраняется в строке проверки hash.
 async function telegramAuthResult(env, initData) {
   if (!initData) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_MISSING'
-    };
+    return { user: null, reason: 'INIT_DATA_MISSING' };
   }
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-    return {
-      user: null,
-      reason: 'BOT_TOKEN_MISSING'
-    };
+    return { user: null, reason: 'BOT_TOKEN_MISSING' };
   }
 
   const params = new URLSearchParams(initData);
@@ -155,21 +171,13 @@ async function telegramAuthResult(env, initData) {
   }
 
   if (!Number.isFinite(authDate) || authDate <= 0) {
-    return {
-      user: null,
-      reason: 'AUTH_DATE_INVALID'
-    };
+    return { user: null, reason: 'AUTH_DATE_INVALID' };
   }
 
   if (Math.abs(Date.now() / 1000 - authDate) > 86400) {
-    return {
-      user: null,
-      reason: 'INIT_DATA_EXPIRED'
-    };
+    return { user: null, reason: 'INIT_DATA_EXPIRED' };
   }
 
-  // ВАЖНО: удаляем только hash.
-  // Поле signature сохраняем в строке проверки.
   params.delete('hash');
 
   const checkString = [...params.entries()]
@@ -243,10 +251,7 @@ async function telegramAuthResult(env, initData) {
       };
     }
 
-    return {
-      user,
-      reason: null
-    };
+    return { user, reason: null };
   } catch {
     return {
       user: null,
@@ -256,59 +261,10 @@ async function telegramAuthResult(env, initData) {
 }
 
 async function telegramUser(env, initData) {
-  const result = await telegramAuthResult(env, initData);
-  return result.user;
+  return (await telegramAuthResult(env, initData)).user;
 }
 
-// Проверка подключения Telegram-бота
-async function botCheck(env) {
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    return json({
-      ok: false,
-      reason: 'BOT_TOKEN_MISSING'
-    }, 503);
-  }
-
-  let response;
-
-  try {
-    response = await fetch(
-      `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getMe`
-    );
-  } catch {
-    return json({
-      ok: false,
-      reason: 'TELEGRAM_CONNECTION_FAILED'
-    }, 502);
-  }
-
-  if (!response.ok) {
-    return json({
-      ok: false,
-      reason: 'TELEGRAM_TOKEN_REJECTED'
-    }, 502);
-  }
-
-  const result = await response.json();
-
-  if (!result.ok || !result.result?.is_bot) {
-    return json({
-      ok: false,
-      reason: 'INVALID_BOT_RESPONSE'
-    }, 502);
-  }
-
-  return json({
-    ok: true,
-    bot_username: result.result.username,
-    expected_bot: 'Sneakerdrop22_bot',
-    matches_expected:
-      String(result.result.username).toLowerCase() ===
-      'sneakerdrop22_bot'
-  });
-}
-
-// Каталог товаров
+// Каталог
 async function products(env) {
   const result = await supabase(
     env,
@@ -318,7 +274,76 @@ async function products(env) {
   return json(Array.isArray(result) ? result : []);
 }
 
-// Уведомление продавцу о новом заказе
+// Запрос к Telegram Bot API
+async function telegramApi(env, method, payload) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    throw new Error('TELEGRAM_BOT_TOKEN missing');
+  }
+
+  const response = await fetch(
+    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8'
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+
+  if (!response.ok) {
+    console.error('Telegram API error', method, response.status);
+    throw new Error('Telegram API request failed');
+  }
+
+  const data = await response.json();
+
+  if (!data.ok) {
+    throw new Error('Telegram API returned error');
+  }
+
+  return data.result;
+}
+
+function orderKeyboard(orderId) {
+  return {
+    inline_keyboard: STATUS_BUTTONS.map(row =>
+      row.map(button => ({
+        text: button.text,
+        callback_data: `order:${orderId}:${button.status}`
+      }))
+    )
+  };
+}
+
+function orderNotificationText(
+  order,
+  customer,
+  items,
+  delivery,
+  pickupPoint,
+  status = 'new'
+) {
+  const details = items.map(item =>
+    `• ${html(item.name)} | ${html(item.size)} | ` +
+    `${item.quantity} шт. × ${item.price} ₽`
+  ).join('\n');
+
+  return (
+    `<b>Новый заказ SNEAKERDROP</b>\n` +
+    `Номер: <code>${html(order.id)}</code>\n\n` +
+    `Покупатель: ${html(customer.name)}\n` +
+    `Телефон: ${html(customer.phone)}\n` +
+    `Город: ${html(customer.city)}\n` +
+    `Доставка: ${html(delivery)}\n` +
+    `Адрес/ПВЗ: ${html(pickupPoint)}\n\n` +
+    `${details}\n\n` +
+    `<b>Итого: ${order.total} ₽</b>\n` +
+    `<b>Статус: ${STATUSES[status] || status}</b>`
+  );
+}
+
+// Уведомление с кнопками
 async function notifySeller(
   env,
   order,
@@ -331,43 +356,20 @@ async function notifySeller(
     return;
   }
 
-  const details = items.map(item =>
-    `• ${html(item.name)} | ${html(item.size)} | ${item.quantity} шт. × ${item.price} ₽`
-  ).join('\n');
-
-  const text =
-    `<b>Новый заказ SNEAKERDROP</b>\n` +
-    `Номер: <code>${html(order.id)}</code>\n\n` +
-    `Покупатель: ${html(customer.name)}\n` +
-    `Телефон: ${html(customer.phone)}\n` +
-    `Город: ${html(customer.city)}\n` +
-    `Доставка: ${html(delivery)}\n` +
-    `Адрес/ПВЗ: ${html(pickupPoint)}\n\n` +
-    `${details}\n\n` +
-    `<b>Итого: ${order.total} ₽</b>\n` +
-    `Статус: Новый`;
-
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8'
-      },
-      body: JSON.stringify({
-        chat_id: env.TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: 'HTML'
-      })
-    }
+  const text = orderNotificationText(
+    order,
+    customer,
+    items,
+    delivery,
+    pickupPoint
   );
 
-  if (!response.ok) {
-    console.error(
-      'Telegram notification failed',
-      response.status
-    );
-  }
+  await telegramApi(env, 'sendMessage', {
+    chat_id: env.TELEGRAM_CHAT_ID,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: orderKeyboard(order.id)
+  });
 }
 
 // Оформление заказа
@@ -380,11 +382,7 @@ async function createOrder(request, env) {
     throw new ApiError('Неверный формат заказа');
   }
 
-  if (
-    !input ||
-    typeof input !== 'object' ||
-    Array.isArray(input)
-  ) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new ApiError('Неверный заказ');
   }
 
@@ -433,9 +431,7 @@ async function createOrder(request, env) {
     !sourceItems.length ||
     sourceItems.length > 30
   ) {
-    throw new ApiError(
-      'Корзина пуста или слишком большая'
-    );
+    throw new ApiError('Корзина пуста или слишком большая');
   }
 
   const requested = sourceItems.map(item => ({
@@ -446,11 +442,7 @@ async function createOrder(request, env) {
       80
     ),
     size: clean(item?.size, 20),
-    quantity: Number(
-      item?.quantity ??
-      item?.qty ??
-      1
-    )
+    quantity: Number(item?.quantity ?? item?.qty ?? 1)
   }));
 
   if (requested.some(item =>
@@ -465,9 +457,7 @@ async function createOrder(request, env) {
     );
   }
 
-  const ids = [...new Set(
-    requested.map(item => item.id)
-  )];
+  const ids = [...new Set(requested.map(item => item.id))];
 
   const catalog = await supabase(
     env,
@@ -475,10 +465,7 @@ async function createOrder(request, env) {
   );
 
   const byId = new Map(
-    (catalog || []).map(item => [
-      String(item.id),
-      item
-    ])
+    (catalog || []).map(item => [String(item.id), item])
   );
 
   const items = [];
@@ -591,10 +578,7 @@ async function createOrder(request, env) {
       pickupPoint
     );
   } catch (error) {
-    console.error(
-      'Telegram notification error',
-      String(error)
-    );
+    console.error('Telegram notification error', String(error));
   }
 
   return json({
@@ -607,7 +591,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// История заказов покупателя
+// История заказов
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -616,10 +600,7 @@ async function myOrders(request, env) {
     ? authorization.slice(4)
     : request.headers.get('X-Telegram-Init-Data');
 
-  const result = await telegramAuthResult(
-    env,
-    initData
-  );
+  const result = await telegramAuthResult(env, initData);
 
   if (!result.user) {
     throw new ApiError(
@@ -633,12 +614,150 @@ async function myOrders(request, env) {
     `orders?select=id,total,items,status,created_at&telegram_user_id=eq.${result.user.id}&order=created_at.desc&limit=50`
   );
 
-  return json(
-    Array.isArray(rows) ? rows : []
-  );
+  return json(Array.isArray(rows) ? rows : []);
 }
 
-// Обработка запросов
+// Обработка нажатий кнопок Telegram
+async function handleTelegramWebhook(request, env) {
+  const configuredSecret = String(
+    env.TELEGRAM_WEBHOOK_SECRET || ''
+  ).trim();
+
+  if (!configuredSecret) {
+    throw new ApiError(
+      'Webhook secret not configured',
+      503
+    );
+  }
+
+  const providedSecret = request.headers.get(
+    'X-Telegram-Bot-Api-Secret-Token'
+  ) || '';
+
+  if (providedSecret !== configuredSecret) {
+    throw new ApiError('Forbidden', 403);
+  }
+
+  const update = await request.json();
+  const callback = update.callback_query;
+
+  if (!callback) {
+    return json({ ok: true });
+  }
+
+  const adminId = String(env.TELEGRAM_CHAT_ID || '');
+  const senderId = String(callback.from?.id || '');
+  const chatId = String(callback.message?.chat?.id || '');
+
+  if (
+    !adminId ||
+    senderId !== adminId ||
+    chatId !== adminId ||
+    callback.message?.chat?.type !== 'private'
+  ) {
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Нет доступа',
+      show_alert: true
+    });
+
+    return json({ ok: true });
+  }
+
+  const match = /^order:([0-9a-fA-F-]{36}):(confirmed|shipped|delivered|cancelled)$/
+    .exec(callback.data || '');
+
+  if (!match) {
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Неизвестная команда'
+    });
+
+    return json({ ok: true });
+  }
+
+  const orderId = match[1];
+  const newStatus = match[2];
+
+  const orders = await supabase(
+    env,
+    `orders?select=id,total,items,status,customer_name,phone,city,delivery_service,pickup_point&id=eq.${orderId}&limit=1`
+  );
+
+  const order = orders?.[0];
+
+  if (!order) {
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Заказ не найден',
+      show_alert: true
+    });
+
+    return json({ ok: true });
+  }
+
+  if (order.status === newStatus) {
+    await telegramApi(env, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: 'Этот статус уже установлен'
+    });
+
+    return json({ ok: true });
+  }
+
+  await supabase(
+    env,
+    `orders?id=eq.${orderId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        Prefer: 'return=minimal'
+      },
+      body: JSON.stringify({
+        status: newStatus
+      })
+    }
+  );
+
+  const customer = {
+    name: order.customer_name,
+    phone: order.phone,
+    city: order.city
+  };
+
+  const text = orderNotificationText(
+    order,
+    customer,
+    order.items || [],
+    order.delivery_service,
+    order.pickup_point,
+    newStatus
+  );
+
+  try {
+    await telegramApi(env, 'editMessageText', {
+      chat_id: callback.message.chat.id,
+      message_id: callback.message.message_id,
+      text,
+      parse_mode: 'HTML',
+      reply_markup: orderKeyboard(orderId)
+    });
+  } catch (error) {
+    console.error(
+      'Telegram message update failed',
+      String(error)
+    );
+  }
+
+  await telegramApi(env, 'answerCallbackQuery', {
+    callback_query_id: callback.id,
+    text: `Статус: ${STATUSES[newStatus]}`
+  });
+
+  return json({ ok: true });
+}
+
+// Главный обработчик
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') {
@@ -667,12 +786,6 @@ export default {
 
       } else if (
         request.method === 'GET' &&
-        path === '/bot-check'
-      ) {
-        response = await botCheck(env);
-
-      } else if (
-        request.method === 'GET' &&
         path === '/products'
       ) {
         response = await products(env);
@@ -689,6 +802,12 @@ export default {
       ) {
         response = await myOrders(request, env);
 
+      } else if (
+        request.method === 'POST' &&
+        path === '/telegram-webhook'
+      ) {
+        response = await handleTelegramWebhook(request, env);
+
       } else {
         response = json({
           error: 'Not found'
@@ -696,10 +815,7 @@ export default {
       }
 
     } catch (error) {
-      console.error(
-        'Worker error',
-        String(error)
-      );
+      console.error('Worker error', String(error));
 
       if (error instanceof ApiError) {
         response = json({
@@ -714,10 +830,7 @@ export default {
 
     const headers = new Headers(response.headers);
 
-    for (
-      const [key, value] of
-      Object.entries(corsHeaders(request))
-    ) {
+    for (const [key, value] of Object.entries(corsHeaders(request))) {
       headers.set(key, value);
     }
 
