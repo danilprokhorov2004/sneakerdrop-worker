@@ -23,6 +23,7 @@ const STATUS_BUTTONS = [
 
 function corsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
+
   const allowed =
     origin === ALLOWED_ORIGIN ||
     /^https:\/\/[a-z0-9-]+\.sneakerdrop-shop\.pages\.dev$/.test(origin);
@@ -59,7 +60,11 @@ function clean(value, max = 200) {
 
 function required(value, max = 200) {
   const result = clean(value, max);
-  if (!result) throw new ApiError('Заполните обязательные поля');
+
+  if (!result) {
+    throw new ApiError('Заполните обязательные поля');
+  }
+
   return result;
 }
 
@@ -89,7 +94,10 @@ function supabaseConfig(env) {
     throw new Error('Invalid SUPABASE_URL');
   }
 
-  if (!key) throw new Error('Missing Supabase key');
+  if (!key) {
+    throw new Error('Missing Supabase key');
+  }
+
   return { url, key };
 }
 
@@ -123,6 +131,7 @@ async function supabase(env, path, options = {}) {
       response.status,
       body?.code || 'unknown'
     );
+
     throw new Error(`Supabase HTTP ${response.status}`);
   }
 
@@ -155,7 +164,7 @@ async function telegramAuthResult(env, initData) {
     return { user: null, reason: 'INIT_DATA_EXPIRED' };
   }
 
-  // Сохраняем signature для работающей авторизации.
+  // Для авторизации сохраняем signature.
   params.delete('hash');
 
   const checkString = [...params.entries()]
@@ -224,7 +233,7 @@ async function telegramAuthResult(env, initData) {
   }
 }
 
-// Каталог
+// Каталог кроссовок
 async function products(env) {
   const result = await supabase(
     env,
@@ -263,13 +272,14 @@ async function telegramApi(env, method, payload) {
       method,
       data.error_code
     );
+
     throw new Error('Telegram API failed');
   }
 
   return data.result;
 }
 
-// Кнопки приветствия
+// Кнопки главного меню
 function welcomeKeyboard() {
   return {
     inline_keyboard: [
@@ -289,7 +299,7 @@ function welcomeKeyboard() {
   };
 }
 
-// Приветствие /start
+// Приветствие бота
 async function sendWelcome(env, chatId) {
   await telegramApi(env, 'sendMessage', {
     chat_id: chatId,
@@ -312,31 +322,29 @@ async function sendWelcome(env, chatId) {
   });
 }
 
-// Условия дропшиппинга
+// Обновлённые условия дропшиппинга
 async function sendDropshippingInfo(env, chatId) {
   await telegramApi(env, 'sendMessage', {
     chat_id: chatId,
     text:
       '<b>🤝 ДРОПШИППИНГ СО SNEAKERDROP</b>\n\n' +
-      'Продавай кроссовки без закупки товара ' +
-      'и собственного склада.\n\n' +
-      '1. Выбираешь модели из ассортимента.\n' +
-      '2. Размещаешь объявления и находишь клиентов.\n' +
-      '3. Передаёшь нам заказ.\n' +
-      '4. Мы проверяем, упаковываем и отправляем ' +
-      'обувь покупателю.\n' +
-      '5. После продажи получаешь вознаграждение.\n\n' +
-      '💰 Базовая выплата — 500 ₽ с продажи.\n' +
-      '📈 При больших объёмах возможны ' +
-      'повышенные выплаты.\n' +
-      '📦 Доставка по всей России.\n\n' +
-      'Напиши нам для обсуждения сотрудничества.',
+      'Предлагаем сотрудничество по системе дропшиппинга ' +
+      'без предварительной закупки товара и собственного склада.\n\n' +
+      'Ты занимаешься поиском клиентов и продажами, ' +
+      'а мы берём на себя проверку, упаковку и отправку ' +
+      'кроссовок напрямую покупателю.\n\n' +
+      '<b>💰 Цены для дропшипперов — те же, ' +
+      'что указаны в нашем розничном магазине.</b>\n\n' +
+      'Все подробности сотрудничества, условия работы ' +
+      'и вопросы по заработку можно обсудить лично.\n\n' +
+      '👇 Напиши мне в личные сообщения, ' +
+      'и я расскажу подробнее.',
     parse_mode: 'HTML',
     reply_markup: {
       inline_keyboard: [
         [
           {
-            text: '✉️ Обсудить сотрудничество',
+            text: '✉️ Написать лично',
             url: CONTACT_URL
           }
         ],
@@ -357,7 +365,7 @@ async function sendDropshippingInfo(env, chatId) {
   });
 }
 
-// Кнопки статусов заказа
+// Кнопки изменения статуса заказа
 function orderKeyboard(orderId) {
   return {
     inline_keyboard: STATUS_BUTTONS.map(row =>
@@ -396,7 +404,7 @@ function orderNotificationText(
   );
 }
 
-// Уведомление продавцу
+// Уведомление о заказе
 async function notifySeller(
   env,
   order,
@@ -423,7 +431,7 @@ async function notifySeller(
   });
 }
 
-// Оформление заказа
+// Создание заказа
 async function createOrder(request, env) {
   let input;
 
@@ -663,7 +671,7 @@ async function createOrder(request, env) {
   }, 201);
 }
 
-// История заказов
+// История заказов покупателя
 async function myOrders(request, env) {
   const authorization =
     request.headers.get('Authorization') || '';
@@ -690,7 +698,7 @@ async function myOrders(request, env) {
   return json(Array.isArray(rows) ? rows : []);
 }
 
-// Webhook Telegram
+// Обработка Telegram webhook
 async function handleTelegramWebhook(request, env) {
   const secret = String(
     env.TELEGRAM_WEBHOOK_SECRET || ''
@@ -707,7 +715,6 @@ async function handleTelegramWebhook(request, env) {
   const update = await request.json();
   const message = update.message;
 
-  // Команда /start
   if (
     message?.chat?.type === 'private' &&
     /^\/start(?:@\w+)?(?:\s|$)/i.test(
@@ -750,7 +757,7 @@ async function handleTelegramWebhook(request, env) {
     return json({ ok: true });
   }
 
-  // Управление статусами заказов
+  // Управление заказами продавцом
   const adminId = String(env.TELEGRAM_CHAT_ID || '');
   const senderId = String(callback.from?.id || '');
   const chatId = String(
@@ -864,59 +871,6 @@ async function handleTelegramWebhook(request, env) {
   return json({ ok: true });
 }
 
-// Временное подключение Telegram webhook.
-// Не требует вставки токенов в ссылку.
-async function connectTelegram(request, env) {
-  if (
-    !env.TELEGRAM_BOT_TOKEN ||
-    !env.TELEGRAM_WEBHOOK_SECRET
-  ) {
-    throw new ApiError(
-      'Настройте TELEGRAM_BOT_TOKEN и TELEGRAM_WEBHOOK_SECRET в Cloudflare',
-      503
-    );
-  }
-
-  const secret = String(
-    env.TELEGRAM_WEBHOOK_SECRET
-  ).trim();
-
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(secret)) {
-    throw new ApiError(
-      'TELEGRAM_WEBHOOK_SECRET должен содержать только A-Z, a-z, 0-9, _ или -',
-      400
-    );
-  }
-
-  const target = new URL(
-    '/telegram-webhook',
-    request.url
-  );
-
-  target.search = '';
-
-  const result = await telegramApi(
-    env,
-    'setWebhook',
-    {
-      url: target.toString(),
-      secret_token: secret,
-      allowed_updates: [
-        'message',
-        'callback_query'
-      ],
-      drop_pending_updates: false
-    }
-  );
-
-  return json({
-    ok: true,
-    message: 'Telegram webhook подключён',
-    webhook_url: target.toString(),
-    telegram_result: result
-  });
-}
-
 // Главный обработчик Cloudflare Worker
 export default {
   async fetch(request, env) {
@@ -942,15 +896,6 @@ export default {
           status: 'ok',
           service: 'sneakerdrop-api'
         });
-
-      } else if (
-        request.method === 'GET' &&
-        path === '/connect-telegram'
-      ) {
-        response = await connectTelegram(
-          request,
-          env
-        );
 
       } else if (
         request.method === 'GET' &&
