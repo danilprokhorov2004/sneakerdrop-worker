@@ -1,4 +1,8 @@
+
 const ALLOWED_ORIGIN = 'https://sneakerdrop-shop.pages.dev';
+
+const SHOP_URL = 'https://t.me/Sneakerdrop22_bot/sneakerdrop';
+const CONTACT_URL = 'https://t.me/sneakerhelp22';
 
 const STATUSES = {
   new: 'Новый',
@@ -137,7 +141,8 @@ async function supabase(env, path, options = {}) {
   return body;
 }
 
-// Проверка Telegram Mini App
+// Проверка Telegram Mini App.
+// Важно: сохраняем signature в проверяемых данных.
 async function telegramAuthResult(env, initData) {
   if (!initData) {
     return {
@@ -178,8 +183,6 @@ async function telegramAuthResult(env, initData) {
     };
   }
 
-  // Сохраняем signature для текущей
-  // работающей авторизации Mini App.
   params.delete('hash');
 
   const checkString = [...params.entries()]
@@ -313,6 +316,103 @@ async function telegramApi(env, method, payload) {
   }
 
   return data.result;
+}
+
+// Приветствие Telegram-бота
+function welcomeKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: '👟 Ассортимент кроссовок',
+          url: SHOP_URL
+        }
+      ],
+      [
+        {
+          text: '🤝 Дропшиппинг',
+          callback_data: 'info:dropshipping'
+        }
+      ]
+    ]
+  };
+}
+
+async function sendWelcome(env, chatId) {
+  const text =
+    '<b>👟 ДОБРО ПОЖАЛОВАТЬ В SNEAKERDROP!</b>\n\n' +
+    'Здесь ты найдёшь актуальный ассортимент кроссовок ' +
+    'по выгодным ценам.\n\n' +
+    '<b>Почему выбирают нас?</b>\n\n' +
+    '👟 Мужские и женские модели\n' +
+    '📸 Реальные фотографии обуви\n' +
+    '📏 Актуальные размеры в наличии\n' +
+    '📦 Доставка по всей России\n' +
+    '📍 Самовывоз в Заринске\n' +
+    '💬 Помощь с подбором размера\n\n' +
+    '<b>🤝 Работаем по дропшиппингу!</b>\n' +
+    'Можно зарабатывать на продаже кроссовок ' +
+    'без закупки товара и собственного склада.\n\n' +
+    '👇 <b>Выбирай, что тебя интересует:</b>';
+
+  await telegramApi(env, 'sendMessage', {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: welcomeKeyboard()
+  });
+}
+
+// Информация для партнёров
+async function sendDropshippingInfo(env, chatId) {
+  const text =
+    '<b>🤝 ДРОПШИППИНГ СО SNEAKERDROP</b>\n\n' +
+    'Хочешь зарабатывать на продаже кроссовок ' +
+    'без закупки товара и собственного склада?\n\n' +
+    '<b>Как проходит сотрудничество:</b>\n\n' +
+    '1. Выбираешь модели из нашего ассортимента.\n' +
+    '2. Размещаешь объявления и находишь покупателей.\n' +
+    '3. Передаёшь нам информацию о заказе.\n' +
+    '4. Мы проверяем, упаковываем и отправляем ' +
+    'кроссовки напрямую твоему клиенту.\n' +
+    '5. После продажи получаешь вознаграждение.\n\n' +
+    '<b>Твой заработок:</b>\n' +
+    '💰 Базовая выплата — 500 ₽ с продажи.\n' +
+    '📈 При больших объёмах возможны повышенные выплаты.\n\n' +
+    '<b>Наши преимущества:</b>\n' +
+    '📦 Отправка по всей России\n' +
+    '📸 Реальные фото и видео товаров\n' +
+    '📏 Помощь с подбором размера\n' +
+    '💬 Поддержка по вопросам заказов\n\n' +
+    'Чтобы начать сотрудничество, напиши нам по кнопке ниже.';
+
+  await telegramApi(env, 'sendMessage', {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: '✉️ Обсудить сотрудничество',
+            url: CONTACT_URL
+          }
+        ],
+        [
+          {
+            text: '👟 Ассортимент кроссовок',
+            url: SHOP_URL
+          }
+        ],
+        [
+          {
+            text: '⬅️ Главное меню',
+            callback_data: 'menu:home'
+          }
+        ]
+      ]
+    }
+  });
 }
 
 function orderKeyboard(orderId) {
@@ -697,12 +797,71 @@ async function handleTelegramWebhook(
   }
 
   const update = await request.json();
+
+  // Приветствие по команде /start
+  const message = update.message;
+
+  if (
+    message?.chat?.type === 'private' &&
+    /^\/start(?:@\w+)?(?:\s|$)/i.test(
+      String(message.text || '')
+    )
+  ) {
+    await sendWelcome(
+      env,
+      message.chat.id
+    );
+
+    return json({ ok: true });
+  }
+
   const callback = update.callback_query;
 
   if (!callback) {
     return json({ ok: true });
   }
 
+  // Информация о дропшиппинге
+  if (callback.data === 'info:dropshipping') {
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id
+      }
+    );
+
+    if (callback.message?.chat?.type === 'private') {
+      await sendDropshippingInfo(
+        env,
+        callback.message.chat.id
+      );
+    }
+
+    return json({ ok: true });
+  }
+
+  // Возврат к главному меню
+  if (callback.data === 'menu:home') {
+    await telegramApi(
+      env,
+      'answerCallbackQuery',
+      {
+        callback_query_id: callback.id
+      }
+    );
+
+    if (callback.message?.chat?.type === 'private') {
+      await sendWelcome(
+        env,
+        callback.message.chat.id
+      );
+    }
+
+    return json({ ok: true });
+  }
+
+  // Ниже — прежняя обработка заказов продавцом.
   const adminId = String(
     env.TELEGRAM_CHAT_ID || ''
   );
